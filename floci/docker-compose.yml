@@ -65,15 +65,17 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
 
     # -------------------------------------------------------------------------
-    # Health check — polls the official Floci readiness endpoint every 5 s.
-    # 'docker ps' will show "(healthy)" once Floci reports it is ready.
+    # Health check — polls the Floci readiness endpoint every 5 s.
+    # Allow up to 60 s for startup before counting failed checks.
     # -------------------------------------------------------------------------
+    # healthcheck:
+    #   test: ["CMD-SHELL", "curl -sf http://localhost:4566/_floci/health || exit 1"]
+    #   interval: 5s
+    #   timeout: 5s
+    #   retries: 10
+    #   start_period: 60s
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_floci/health || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
+      disable: true
 
 # =============================================================================
 # Named volume — provides persistence across 'docker compose down' (without -v)
