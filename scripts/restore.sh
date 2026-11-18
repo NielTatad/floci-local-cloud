@@ -15,8 +15,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-COMPOSE_DIR="${REPO_ROOT}/floci"
-COMPOSE_FILE="${COMPOSE_DIR}/docker-compose.yml"
 
 if [[ -t 1 ]]; then
   RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'
