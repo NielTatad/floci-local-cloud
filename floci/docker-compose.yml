@@ -1,0 +1,83 @@
+# =============================================================================
+# Floci Local Cloud — Docker Compose
+#
+# Official image: floci/floci
+# Docs:           https://github.com/floci-io/floci
+# Health:         GET /_floci/health  → HTTP 200 when ready
+# Port:           4566 (AWS-compatible endpoint)
+# =============================================================================
+
+services:
+  floci:
+    image: floci/floci:${FLOCI_VERSION:-2.5.0}
+    container_name: ${FLOCI_CONTAINER_NAME:-floci}
+    restart: unless-stopped
+
+    ports:
+      - "${FLOCI_HOST_PORT:-4566}:4566"
+
+    environment:
+      # -------------------------------------------------------------------------
+      # Storage — use 'hybrid' for local dev (in-memory speed + periodic flush)
+      # Options: memory | persistent | hybrid | wal
+      # -------------------------------------------------------------------------
+      FLOCI_STORAGE_MODE: "${FLOCI_STORAGE_MODE:-hybrid}"
+      FLOCI_STORAGE_PERSISTENT_PATH: "/app/data"
+
+      # -------------------------------------------------------------------------
+      # Network — service name so returned URLs resolve correctly inside Compose
+      # -------------------------------------------------------------------------
+      FLOCI_HOSTNAME: "${FLOCI_HOSTNAME:-floci}"
+
+      # -------------------------------------------------------------------------
+      # AWS defaults (used when requests arrive without an explicit region/account)
+      # -------------------------------------------------------------------------
+      FLOCI_DEFAULT_REGION: "${FLOCI_DEFAULT_REGION:-us-east-1}"
+      FLOCI_DEFAULT_ACCOUNT_ID: "${FLOCI_DEFAULT_ACCOUNT_ID:-000000000000}"
+
+      # -------------------------------------------------------------------------
+      # S3 auth enforcement (false = accept any non-empty credentials)
+      # Set to true if you want Floci to reject unknown signed S3 keys
+      # -------------------------------------------------------------------------
+      FLOCI_SERVICES_S3_ENFORCE_AUTH: "${FLOCI_SERVICES_S3_ENFORCE_AUTH:-false}"
+
+      # -------------------------------------------------------------------------
+      # Security-group enforcement — requires rootful Docker + Linux containers
+      # Leave false unless you specifically need VPC-level traffic filtering
+      # -------------------------------------------------------------------------
+      FLOCI_NETWORK_SECURITY_GROUP_ENFORCEMENT_ENABLED: "${FLOCI_NETWORK_SECURITY_GROUP_ENFORCEMENT_ENABLED:-false}"
+
+      # -------------------------------------------------------------------------
+      # Web console sidecar (optional browser UI at http://localhost:4500)
+      # Set to false to disable it and avoid pulling the sidecar image on first use
+      # -------------------------------------------------------------------------
+      FLOCI_SERVICES_UI_ENABLED: "${FLOCI_SERVICES_UI_ENABLED:-true}"
+      FLOCI_SERVICES_UI_BIND_ADDRESS: "127.0.0.1"
+
+    volumes:
+      # Persistent state directory — survives container stop/start
+      # WARNING: 'docker compose down -v' will delete this volume and all state
+      - floci-data:/app/data
+
+      # Docker socket — required for Lambda, RDS, ElastiCache, ECS, EC2, MSK,
+      # OpenSearch, Neptune, DocumentDB, EKS, CodeBuild, and the web console sidecar.
+      # Remove this mount if you do not use container-backed services.
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    # -------------------------------------------------------------------------
+    # Health check — polls the official Floci readiness endpoint every 5 s.
+    # 'docker ps' will show "(healthy)" once Floci reports it is ready.
+    # -------------------------------------------------------------------------
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_floci/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+# =============================================================================
+# Named volume — provides persistence across 'docker compose down' (without -v)
+# =============================================================================
+volumes:
+  floci-data:
+    name: ${FLOCI_VOLUME_NAME:-floci-data}

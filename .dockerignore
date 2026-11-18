@@ -1,0 +1,49 @@
+# =============================================================================
+# floci-local-cloud — .dockerignore
+#
+# This repository does not build a custom Docker image — it uses the official
+# floci/floci image directly. This file is provided to prevent accidental
+# inclusion of sensitive files if a Dockerfile is ever added in the future,
+# and to keep any build context lean.
+# =============================================================================
+
+# Git metadata
+.git/
+.gitignore
+
+# Environment files — never send credentials to a build context
+.env
+floci/.env
+**/.env
+**/.env.local
+
+# Backup archives — large and not needed in any image build context
+backups/*.tar.gz
+backups/*.tar.gz.sha256
+
+# CI workflow definitions — not needed in a container
+.github/
+
+# Editor and IDE artefacts
+.vscode/
+.idea/
+**/*.swp
+**/*.swo
+
+# macOS artefacts
+**/.DS_Store
+**/.AppleDouble
+
+# Logs and temp files
+**/*.log
+**/tmp/
+**/temp/
+
+# Terraform state — must never enter a container build context
+**/*.tfstate
+**/*.tfstate.*
+**/.terraform/
+
+# README and documentation — not needed at runtime
+README.md
+LICENSE

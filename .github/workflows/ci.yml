@@ -1,0 +1,393 @@
+# =============================================================================
+# Floci Local Cloud — CI Workflow
+#
+# Triggers:
+#   - Push to main
+#   - Pull requests targeting main
+#   - Manual workflow dispatch
+#
+# What this workflow does:
+#   1. Validates Docker Compose configuration
+#   2. Validates YAML syntax (yamllint)
+#   3. Lints all Bash scripts (ShellCheck)
+#   4. Validates Makefile syntax
+#   5. Verifies required configuration files exist
+#   6. Pulls the pinned Floci Docker image
+#   7. Starts Floci and waits for the health endpoint
+#   8. Tests AWS CLI connectivity with dummy credentials
+#   9. Runs basic IAM and S3 integration checks
+#  10. Cleans up all CI resources
+#
+# Security:
+#   - Minimal permissions (contents: read only)
+#   - No real AWS credentials used anywhere
+#   - No deployment to local environments
+#   - Third-party actions pinned to immutable SHA refs
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Minimal permissions — read repository contents only.
+# No write access to code, packages, deployments, or secrets.
+permissions:
+  contents: read
+
+jobs:
+  # ===========================================================================
+  # Job 1: Static validation — fast, no Docker required
+  # ===========================================================================
+  validate:
+    name: Static Validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      # -----------------------------------------------------------------------
+      # 1. Docker Compose configuration validation
+      # -----------------------------------------------------------------------
+      - name: Validate Docker Compose configuration
+        run: |
+          docker compose \
+            --project-directory floci \
+            --file floci/docker-compose.yml \
+            config --quiet
+          echo "Docker Compose configuration is valid."
+
+      # -----------------------------------------------------------------------
+      # 2. YAML syntax validation
+      # -----------------------------------------------------------------------
+      - name: Install yamllint
+        run: pip install --quiet yamllint==1.35.1
+
+      - name: Validate YAML syntax
+        run: |
+          yamllint \
+            --config-data '{extends: default, rules: {line-length: {max: 120}, truthy: {allowed-values: ["true", "false"]}}}' \
+            floci/docker-compose.yml \
+            .github/workflows/ci.yml
+          echo "YAML syntax is valid."
+
+      # -----------------------------------------------------------------------
+      # 3. ShellCheck — lint all Bash scripts
+      # -----------------------------------------------------------------------
+      - name: Install ShellCheck
+        run: |
+          SHELLCHECK_VERSION=0.10.0
+          curl -sSL \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ --strip-components=1 -C /usr/local/bin shellcheck-v${SHELLCHECK_VERSION}/shellcheck
+          shellcheck --version
+
+      - name: Lint Bash scripts with ShellCheck
+        run: |
+          SCRIPTS=(
+            scripts/start.sh
+            scripts/stop.sh
+            scripts/status.sh
+            scripts/health-check.sh
+            scripts/logs.sh
+            scripts/backup.sh
+            scripts/restore.sh
+          )
+          echo "Running ShellCheck on ${#SCRIPTS[@]} scripts..."
+          FAILED=0
+          for script in "${SCRIPTS[@]}"; do
+            echo "  checking: ${script}"
+            shellcheck --shell=bash --severity=warning "${script}" || FAILED=1
+          done
+          if [[ "${FAILED}" -eq 1 ]]; then
+            echo "ShellCheck found issues. See output above."
+            exit 1
+          fi
+          echo "All scripts passed ShellCheck."
+
+      # -----------------------------------------------------------------------
+      # 4. Makefile syntax validation
+      # -----------------------------------------------------------------------
+      - name: Validate Makefile syntax
+        run: |
+          make --dry-run help > /dev/null
+          echo "Makefile syntax is valid."
+
+      # -----------------------------------------------------------------------
+      # 5. Required configuration files
+      # -----------------------------------------------------------------------
+      - name: Verify required files exist
+        run: |
+          REQUIRED_FILES=(
+            "floci/docker-compose.yml"
+            "floci/.env.example"
+            "scripts/start.sh"
+            "scripts/stop.sh"
+            "scripts/status.sh"
+            "scripts/health-check.sh"
+            "scripts/logs.sh"
+            "scripts/backup.sh"
+            "scripts/restore.sh"
+            "Makefile"
+            ".gitignore"
+            ".dockerignore"
+            "backups/.gitkeep"
+            "LICENSE"
+            "README.md"
+          )
+          MISSING=0
+          for f in "${REQUIRED_FILES[@]}"; do
+            if [[ -f "${f}" ]]; then
+              echo "  [ok] ${f}"
+            else
+              echo "  [MISSING] ${f}"
+              MISSING=1
+            fi
+          done
+          if [[ "${MISSING}" -eq 1 ]]; then
+            echo "One or more required files are missing."
+            exit 1
+          fi
+          echo "All required files present."
+
+      # -----------------------------------------------------------------------
+      # Verify scripts are executable
+      # -----------------------------------------------------------------------
+      - name: Verify script permissions
+        run: |
+          FAILED=0
+          for script in scripts/*.sh; do
+            if [[ -x "${script}" ]]; then
+              echo "  [ok] ${script}"
+            else
+              echo "  [not executable] ${script}"
+              FAILED=1
+            fi
+          done
+          if [[ "${FAILED}" -eq 1 ]]; then
+            echo "One or more scripts are not executable. Run: chmod +x scripts/*.sh"
+            exit 1
+          fi
+
+  # ===========================================================================
+  # Job 2: Integration — start Floci, test connectivity, clean up
+  # ===========================================================================
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: validate   # only run if static validation passes
+
+    env:
+      # Dummy credentials — never use real AWS credentials in CI
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      FLOCI_ENDPOINT: http://localhost:4566
+      FLOCI_CONTAINER_NAME: floci
+      FLOCI_VOLUME_NAME: floci-data
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      # -----------------------------------------------------------------------
+      # 6. Pull the pinned Floci image explicitly to verify it is pullable
+      # -----------------------------------------------------------------------
+      - name: Pull Floci Docker image
+        run: |
+          # Read the pinned version from .env.example (portable, no jq required)
+          FLOCI_VERSION=$(grep '^FLOCI_VERSION=' floci/.env.example | cut -d= -f2)
+          echo "Pulling floci/floci:${FLOCI_VERSION}..."
+          docker pull "floci/floci:${FLOCI_VERSION}"
+          echo "Image pulled successfully."
+
+      # -----------------------------------------------------------------------
+      # 7. Start Floci
+      # Note: CI uses memory storage mode — no persistence needed in ephemeral runners.
+      # We override FLOCI_STORAGE_MODE here; .env is not committed to the repo.
+      # -----------------------------------------------------------------------
+      - name: Start Floci
+        run: |
+          # Create a minimal .env for CI — overrides .env.example defaults
+          cat > floci/.env <<'EOF'
+          FLOCI_VERSION=2.5.0
+          FLOCI_CONTAINER_NAME=floci
+          FLOCI_VOLUME_NAME=floci-data
+          FLOCI_HOST_PORT=4566
+          FLOCI_HOSTNAME=floci
+          FLOCI_STORAGE_MODE=memory
+          FLOCI_DEFAULT_REGION=us-east-1
+          FLOCI_DEFAULT_ACCOUNT_ID=000000000000
+          FLOCI_SERVICES_S3_ENFORCE_AUTH=false
+          FLOCI_NETWORK_SECURITY_GROUP_ENFORCEMENT_ENABLED=false
+          FLOCI_SERVICES_UI_ENABLED=false
+          EOF
+
+          docker compose \
+            --project-directory floci \
+            --file floci/docker-compose.yml \
+            up --detach --remove-orphans
+
+          echo "Floci container started."
+
+      # -----------------------------------------------------------------------
+      # 8. Wait for Floci health endpoint
+      # -----------------------------------------------------------------------
+      - name: Wait for Floci to become healthy
+        run: |
+          MAX_ATTEMPTS=24   # 24 × 5 s = 120 s
+          ATTEMPT=0
+          until [[ "${ATTEMPT}" -ge "${MAX_ATTEMPTS}" ]]; do
+            ATTEMPT=$(( ATTEMPT + 1 ))
+            HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+              --max-time 5 \
+              "${FLOCI_ENDPOINT}/_floci/health" 2>/dev/null || echo "000")
+            if [[ "${HTTP_STATUS}" == "200" ]]; then
+              echo "Floci is healthy (HTTP 200) after ${ATTEMPT} attempt(s)."
+              exit 0
+            fi
+            echo "Attempt ${ATTEMPT}/${MAX_ATTEMPTS} — waiting (HTTP ${HTTP_STATUS})..."
+            sleep 5
+          done
+          echo "Floci did not become healthy within $(( MAX_ATTEMPTS * 5 )) seconds."
+          docker compose --project-directory floci --file floci/docker-compose.yml ps
+          docker compose --project-directory floci --file floci/docker-compose.yml logs
+          exit 1
+
+      # -----------------------------------------------------------------------
+      # Install AWS CLI v2 for integration tests
+      # Ubuntu 24.04 runners already ship AWS CLI; this step ensures v2.
+      # -----------------------------------------------------------------------
+      - name: Verify AWS CLI v2
+        run: |
+          aws --version
+          # Confirm it is v2 (v1 would print "aws-cli/1.")
+          aws --version 2>&1 | grep -q "aws-cli/2" || {
+            echo "AWS CLI v2 is required. Found: $(aws --version 2>&1)"
+            exit 1
+          }
+
+      # -----------------------------------------------------------------------
+      # 9. AWS CLI connectivity test
+      # -----------------------------------------------------------------------
+      - name: Test AWS CLI connectivity
+        run: |
+          # STS GetCallerIdentity — basic connectivity check
+          IDENTITY=$(aws sts get-caller-identity \
+            --endpoint-url "${FLOCI_ENDPOINT}" \
+            --output json)
+          echo "STS identity: ${IDENTITY}"
+          echo "AWS CLI connectivity confirmed."
+
+      # -----------------------------------------------------------------------
+      # 10. IAM integration test
+      # -----------------------------------------------------------------------
+      - name: IAM integration test — create and verify user
+        run: |
+          # Create a test IAM user
+          aws iam create-user \
+            --user-name ci-test-user \
+            --endpoint-url "${FLOCI_ENDPOINT}" \
+            --output json
+
+          # Verify the user exists
+          aws iam get-user \
+            --user-name ci-test-user \
+            --endpoint-url "${FLOCI_ENDPOINT}" \
+            --output json | grep -q '"UserName": "ci-test-user"'
+
+          # List users and confirm it appears
+          USER_COUNT=$(aws iam list-users \
+            --endpoint-url "${FLOCI_ENDPOINT}" \
+            --output json | python3 -c "import sys,json; print(len(json.load(sys.stdin)['Users']))")
+          echo "IAM users present: ${USER_COUNT}"
+          [[ "${USER_COUNT}" -ge 1 ]] || { echo "Expected at least 1 IAM user."; exit 1; }
+
+          echo "IAM integration test passed."
+
+      # -----------------------------------------------------------------------
+      # 10. S3 integration test
+      # -----------------------------------------------------------------------
+      - name: S3 integration test — create bucket, put and get object
+        run: |
+          BUCKET_NAME="ci-test-bucket-$(date +%s)"
+
+          # Create bucket
+          aws s3api create-bucket \
+            --bucket "${BUCKET_NAME}" \
+            --endpoint-url "${FLOCI_ENDPOINT}" \
+            --output json
+
+          # List buckets and confirm it appears
+          aws s3api list-buckets \
+            --endpoint-url "${FLOCI_ENDPOINT}" \
+            --output json | grep -q "\"Name\": \"${BUCKET_NAME}\""
+
+          # Put an object
+          echo "floci-ci-test-$(date -u +%Y%m%dT%H%M%SZ)" > /tmp/ci-test-object.txt
+          aws s3api put-object \
+            --bucket "${BUCKET_NAME}" \
+            --key "ci/test.txt" \
+            --body /tmp/ci-test-object.txt \
+            --endpoint-url "${FLOCI_ENDPOINT}" \
+            --output json
+
+          # Get the object back and verify content
+          aws s3api get-object \
+            --bucket "${BUCKET_NAME}" \
+            --key "ci/test.txt" \
+            --endpoint-url "${FLOCI_ENDPOINT}" \
+            /tmp/ci-retrieved-object.txt
+
+          diff /tmp/ci-test-object.txt /tmp/ci-retrieved-object.txt
+          echo "S3 integration test passed (bucket: ${BUCKET_NAME})."
+
+      # -----------------------------------------------------------------------
+      # 10. (cont.) — Run the health-check script inside CI
+      # -----------------------------------------------------------------------
+      - name: Run health-check.sh script
+        run: |
+          export FLOCI_HOST_PORT=4566
+          export FLOCI_CONTAINER_NAME=floci
+          export FLOCI_VOLUME_NAME=floci-data
+          bash scripts/health-check.sh
+
+      # -----------------------------------------------------------------------
+      # 11. Clean up — always runs, even if earlier steps fail
+      # -----------------------------------------------------------------------
+      - name: Clean up CI resources
+        if: always()
+        run: |
+          echo "Stopping and removing Floci containers..."
+          docker compose \
+            --project-directory floci \
+            --file floci/docker-compose.yml \
+            down --volumes --remove-orphans 2>/dev/null || true
+
+          # Remove the CI .env — it contains no secrets but keep things tidy
+          rm -f floci/.env
+
+          echo "CI cleanup complete."
+
+      # -----------------------------------------------------------------------
+      # Always print container logs on failure for diagnostics
+      # -----------------------------------------------------------------------
+      - name: Print container logs on failure
+        if: failure()
+        run: |
+          echo "=== Floci container logs ==="
+          docker compose \
+            --project-directory floci \
+            --file floci/docker-compose.yml \
+            logs --tail 100 2>/dev/null || true
+          echo "=== Docker system info ==="
+          docker system df 2>/dev/null || true
