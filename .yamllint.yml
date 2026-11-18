@@ -10,7 +10,13 @@ rules:
     max: 120
     level: error
   truthy:
+    # check-keys: false tells yamllint not to flag mapping keys as truthy
+    # values. This is required for GitHub Actions workflows, where `on:` is a
+    # valid YAML mapping key, not a boolean. Without this, yamllint (using
+    # YAML 1.1 semantics) treats `on` as a synonym for `true` and raises an
+    # error. See: https://github.com/adrienverge/yamllint/issues/540
     allowed-values: ["true", "false"]
+    check-keys: false
     level: error
   document-start:
     present: true
