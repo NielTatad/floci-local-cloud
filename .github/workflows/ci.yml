@@ -24,7 +24,7 @@
 #   - No deployment to local environments
 #   - Third-party actions pinned to immutable SHA refs
 # =============================================================================
-
+---
 name: CI
 
 on:
@@ -74,7 +74,7 @@ jobs:
       - name: Validate YAML syntax
         run: |
           yamllint \
-            --config-data '{extends: default, rules: {line-length: {max: 120}, truthy: {allowed-values: ["true", "false"]}}}' \
+            --config-file .yamllint.yml \
             floci/docker-compose.yml \
             .github/workflows/ci.yml
           echo "YAML syntax is valid."
@@ -85,9 +85,11 @@ jobs:
       - name: Install ShellCheck
         run: |
           SHELLCHECK_VERSION=0.10.0
+          ASSET="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          MEMBER="shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
           curl -sSL \
-            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
-            | tar -xJ --strip-components=1 -C /usr/local/bin shellcheck-v${SHELLCHECK_VERSION}/shellcheck
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${ASSET}" \
+            | tar -xJ --strip-components=1 -C /usr/local/bin "${MEMBER}"
           shellcheck --version
 
       - name: Lint Bash scripts with ShellCheck
@@ -139,6 +141,7 @@ jobs:
             "Makefile"
             ".gitignore"
             ".dockerignore"
+            ".yamllint.yml"
             "backups/.gitkeep"
             "LICENSE"
             "README.md"

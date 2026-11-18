@@ -6,7 +6,7 @@
 # Health:         GET /_floci/health  → HTTP 200 when ready
 # Port:           4566 (AWS-compatible endpoint)
 # =============================================================================
-
+---
 services:
   floci:
     image: floci/floci:${FLOCI_VERSION:-2.5.0}
